@@ -7,6 +7,7 @@ import torch
 from safetensors.torch import load_file as load_safetensors_file
 from torch.utils.data import DataLoader
 from transformers import LlamaConfig
+from transformers.utils import cached_file
 from transformers.models.auto.configuration_auto import AutoConfig
 
 from speculators.config import SpeculatorsConfig, VerifierConfig
@@ -135,18 +136,40 @@ def main(args: argparse.Namespace):
         speculator_config = Eagle3SpeculatorConfig.from_pretrained(
             args.pretrained_draft_model_path
         )
-        
+
+        # Update verifier in config if provided in args
+        if args.verifier_name_or_path:
+             speculator_config.speculators_config.verifier.name_or_path = args.verifier_name_or_path
+
         # Manually load t2d/d2t from checkpoint to initialize model structure correctly
         t2d, d2t = None, None
-        st_path = Path(args.pretrained_draft_model_path) / "model.safetensors"
-        bin_path = Path(args.pretrained_draft_model_path) / "pytorch_model.bin"
         
+        # Try to find model file (local or hub)
+        model_path = args.pretrained_draft_model_path
+        st_path = Path(model_path) / "model.safetensors"
+        bin_path = Path(model_path) / "pytorch_model.bin"
+        
+        file_to_load = None
         if st_path.exists():
-            state_dict = load_safetensors_file(st_path)
-            t2d = state_dict.get("t2d")
-            d2t = state_dict.get("d2t")
+            file_to_load = st_path
         elif bin_path.exists():
-            state_dict = torch.load(bin_path, map_location="cpu")
+            file_to_load = bin_path
+        else:
+            # Try getting from hub cache
+            try:
+                file_to_load = cached_file(model_path, "model.safetensors")
+                if file_to_load is None:
+                    file_to_load = cached_file(model_path, "pytorch_model.bin")
+            except Exception:
+                pass
+
+        if file_to_load:
+            file_to_load = str(file_to_load)
+            if file_to_load.endswith(".safetensors"):
+                state_dict = load_safetensors_file(file_to_load)
+            else:
+                state_dict = torch.load(file_to_load, map_location="cpu")
+            
             t2d = state_dict.get("t2d")
             d2t = state_dict.get("d2t")
             
@@ -154,12 +177,29 @@ def main(args: argparse.Namespace):
             t2d = t2d.to(device)
         if d2t is not None:
             d2t = d2t.to(device)
+
+        # Check for vocab size mismatch only if t2d is NOT found
+        ignore_mismatched_sizes = False
+        if t2d is None:
+            verifier_config = AutoConfig.from_pretrained(speculator_config.speculators_config.verifier.name_or_path)
+            if hasattr(verifier_config, "text_config"):
+                verifier_config = verifier_config.text_config
+            
+            if verifier_config.vocab_size != speculator_config.draft_vocab_size:
+                print(f"WARNING: Verifier vocab size ({verifier_config.vocab_size}) does not match "
+                      f"draft vocab size ({speculator_config.draft_vocab_size}) and no mapping found. "
+                      "Updating draft vocab size to match verifier and ignoring mismatched sizes.")
+                speculator_config.draft_vocab_size = verifier_config.vocab_size
+                ignore_mismatched_sizes = True
+        else:
+             print("INFO: Found t2d/d2t mapping in checkpoint. Using mapped vocabulary.")
             
         draft_model = Eagle3DraftModel.from_pretrained(
             args.pretrained_draft_model_path,
             config=speculator_config,
             t2d=t2d,
-            d2t=d2t
+            d2t=d2t,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
         )
         
         if speculator_config.eagle_aux_hidden_state_layer_ids:
