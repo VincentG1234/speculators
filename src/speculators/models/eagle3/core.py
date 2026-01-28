@@ -325,8 +325,13 @@ class Eagle3DraftModel(SpeculatorModel):
                 f"{lm_head_weight.shape} does not match draft "
                 f"lm head shape {self.lm_head.weight.shape}"
             )
-        self.lm_head.weight.data = lm_head_weight.detach().clone()
-        self.verifier_lm_head.weight.data = lm_head_weight.detach().clone()
+        self.lm_head.weight.data = lm_head_weight.to(
+            dtype=self.lm_head.weight.dtype, device=self.lm_head.weight.device
+        ).detach().clone()
+        self.verifier_lm_head.weight.data = lm_head_weight.to(
+            dtype=self.verifier_lm_head.weight.dtype,
+            device=self.verifier_lm_head.weight.device,
+        ).detach().clone()
 
         self.verifier_lm_head.weight.requires_grad = False
 
