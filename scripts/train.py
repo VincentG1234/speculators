@@ -1,7 +1,10 @@
 import argparse
+import os
+from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors.torch import load_file as load_safetensors_file
 from torch.utils.data import DataLoader
 from transformers import LlamaConfig
 from transformers.models.auto.configuration_auto import AutoConfig
@@ -121,53 +124,97 @@ def main(args: argparse.Namespace):
     local_rank, world_size, rank, is_distributed = maybe_setup_distributed()
     device = torch.device(local_rank)
 
-    # Load t2d and d2t tensors if provided
-    if args.d2t_path or args.t2d_path:
-        if not (args.d2t_path and args.t2d_path):
+    if args.pretrained_draft_model_path:
+        # Fine-tuning mode
+        if args.d2t_path or args.t2d_path:
             raise ValueError(
-                "Both t2d and d2t must be provided together, or both must be omitted. "
-                f"Got t2d={'provided' if args.t2d_path is not None else 'not provided'}"
-                f"d2t={'provided' if args.d2t_path is not None else 'not provided'}"
+                "Cannot specify d2t/t2d paths when using pretrained model. "
+                "Mappings will be loaded from the model checkpoint."
             )
-        d2t = torch.from_numpy(np.load(args.d2t_path)).to(device)
-        t2d = torch.from_numpy(np.load(args.t2d_path)).to(device)
-        draft_vocab_size = d2t.shape[0]
+
+        speculator_config = Eagle3SpeculatorConfig.from_pretrained(
+            args.pretrained_draft_model_path
+        )
+        
+        # Manually load t2d/d2t from checkpoint to initialize model structure correctly
+        t2d, d2t = None, None
+        st_path = Path(args.pretrained_draft_model_path) / "model.safetensors"
+        bin_path = Path(args.pretrained_draft_model_path) / "pytorch_model.bin"
+        
+        if st_path.exists():
+            state_dict = load_safetensors_file(st_path)
+            t2d = state_dict.get("t2d")
+            d2t = state_dict.get("d2t")
+        elif bin_path.exists():
+            state_dict = torch.load(bin_path, map_location="cpu")
+            t2d = state_dict.get("t2d")
+            d2t = state_dict.get("d2t")
+            
+        if t2d is not None:
+            t2d = t2d.to(device)
+        if d2t is not None:
+            d2t = d2t.to(device)
+            
+        draft_model = Eagle3DraftModel.from_pretrained(
+            args.pretrained_draft_model_path,
+            config=speculator_config,
+            t2d=t2d,
+            d2t=d2t
+        )
+        
+        if speculator_config.eagle_aux_hidden_state_layer_ids:
+             print(f"INFO: Pretrained model uses layer IDs: {speculator_config.eagle_aux_hidden_state_layer_ids}")
+             print("Ensure your training data is generated with these same layer IDs!")
+
     else:
-        d2t = None
-        t2d = None
-        # When vocab mapping is not provided, use the full verifier vocab
-        verifier_config = AutoConfig.from_pretrained(args.verifier_name_or_path)
-        if hasattr(verifier_config, "text_config"):
-            verifier_config = verifier_config.text_config
-        draft_vocab_size = verifier_config.vocab_size
-
-    # Setup speculator config
-    transformer_layer_config = create_transformer_layer_config(
-        args.verifier_name_or_path, args.num_layers
-    )
-
-    speculator_config = Eagle3SpeculatorConfig(
-        transformer_layer_config=transformer_layer_config,
-        draft_vocab_size=draft_vocab_size,
-        norm_before_residual=NORM_BEFORE_RESIDUAL,
-        speculators_config=SpeculatorsConfig(
-            algorithm="eagle3",
-            proposal_methods=[
-                GreedyTokenProposalConfig(
-                    proposal_type="greedy",
-                    speculative_tokens=args.ttt_steps,
+        # Scratch training mode
+        # Load t2d and d2t tensors if provided
+        if args.d2t_path or args.t2d_path:
+            if not (args.d2t_path and args.t2d_path):
+                raise ValueError(
+                    "Both t2d and d2t must be provided together, or both must be omitted. "
+                    f"Got t2d={'provided' if args.t2d_path is not None else 'not provided'}"
+                    f"d2t={'provided' if args.d2t_path is not None else 'not provided'}"
                 )
-            ],
-            default_proposal_method="greedy",
-            verifier=VerifierConfig(
-                name_or_path=args.verifier_name_or_path,
-                architectures=["LlamaForCausalLM"],
-            ),
-        ),
-    )
+            d2t = torch.from_numpy(np.load(args.d2t_path)).to(device)
+            t2d = torch.from_numpy(np.load(args.t2d_path)).to(device)
+            draft_vocab_size = d2t.shape[0]
+        else:
+            d2t = None
+            t2d = None
+            # When vocab mapping is not provided, use the full verifier vocab
+            verifier_config = AutoConfig.from_pretrained(args.verifier_name_or_path)
+            if hasattr(verifier_config, "text_config"):
+                verifier_config = verifier_config.text_config
+            draft_vocab_size = verifier_config.vocab_size
 
-    # Setup draft model
-    draft_model = Eagle3DraftModel(config=speculator_config, t2d=t2d, d2t=d2t)
+        # Setup speculator config
+        transformer_layer_config = create_transformer_layer_config(
+            args.verifier_name_or_path, args.num_layers
+        )
+
+        speculator_config = Eagle3SpeculatorConfig(
+            transformer_layer_config=transformer_layer_config,
+            draft_vocab_size=draft_vocab_size,
+            norm_before_residual=NORM_BEFORE_RESIDUAL,
+            speculators_config=SpeculatorsConfig(
+                algorithm="eagle3",
+                proposal_methods=[
+                    GreedyTokenProposalConfig(
+                        proposal_type="greedy",
+                        speculative_tokens=args.ttt_steps,
+                    )
+                ],
+                default_proposal_method="greedy",
+                verifier=VerifierConfig(
+                    name_or_path=args.verifier_name_or_path,
+                    architectures=["LlamaForCausalLM"],
+                ),
+            ),
+        )
+
+        # Setup draft model
+        draft_model = Eagle3DraftModel(config=speculator_config, t2d=t2d, d2t=d2t)
 
     # Setup dataloaders
     train_files, val_files = split_files(args.data_path, ratio=0.9)
@@ -241,6 +288,12 @@ def parse_args():
     parser.add_argument("--t2d-path", type=str, default=None)
     parser.add_argument("--ttt-steps", type=int, default=3)
     parser.add_argument("--ttt-step-loss-decay", type=float, default=1.0)
+    parser.add_argument(
+        "--pretrained-draft-model-path",
+        type=str,
+        default=None,
+        help="Path to pretrained draft model to finetune",
+    )
     parser.add_argument(
         "--use-off-policy-tokens",
         action="store_true",
