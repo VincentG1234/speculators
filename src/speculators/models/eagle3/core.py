@@ -1,10 +1,11 @@
 # ruff: noqa: ERA001
 import copy
-from typing import ClassVar
+import os
+from typing import ClassVar, Literal
 
 import torch
 from torch.nn.attention.flex_attention import create_block_mask
-from transformers import AutoConfig, DynamicCache, PretrainedConfig
+from transformers import AutoConfig, DynamicCache, PretrainedConfig, PreTrainedModel
 
 from speculators.config import VerifierConfig
 from speculators.model import SpeculatorModel
@@ -166,11 +167,14 @@ class Eagle3DraftModel(SpeculatorModel):
         config: Eagle3SpeculatorConfig,
         t2d: torch.Tensor | None,
         d2t: torch.Tensor | None,
+        verifier: str | os.PathLike | PreTrainedModel | None = None,
+        verifier_attachment_mode: Literal["detached", "full", "train_only"]
+        | None = None,
     ):
         super().__init__(
             config=config,
-            verifier=None,
-            verifier_attachment_mode="train_only",
+            verifier=verifier,
+            verifier_attachment_mode=verifier_attachment_mode or "train_only",
         )
         self.hidden_size = config.transformer_layer_config.hidden_size
         self.draft_vocab_size = config.draft_vocab_size
