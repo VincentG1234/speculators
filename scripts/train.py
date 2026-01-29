@@ -143,6 +143,7 @@ def main(args: argparse.Namespace):
 
         # Manually load t2d/d2t from checkpoint to initialize model structure correctly
         t2d, d2t = None, None
+        state_dict = None
         
         # Try to find model file (local or hub)
         model_path = args.pretrained_draft_model_path
@@ -179,7 +180,6 @@ def main(args: argparse.Namespace):
             d2t = d2t.to(device)
 
         # Check for vocab size mismatch only if t2d is NOT found
-        ignore_mismatched_sizes = False
         if t2d is None:
             verifier_config = AutoConfig.from_pretrained(speculator_config.speculators_config.verifier.name_or_path)
             if hasattr(verifier_config, "text_config"):
@@ -188,19 +188,36 @@ def main(args: argparse.Namespace):
             if verifier_config.vocab_size != speculator_config.draft_vocab_size:
                 print(f"WARNING: Verifier vocab size ({verifier_config.vocab_size}) does not match "
                       f"draft vocab size ({speculator_config.draft_vocab_size}) and no mapping found. "
-                      "Updating draft vocab size to match verifier and ignoring mismatched sizes.")
+                      "Updating draft vocab size to match verifier.")
                 speculator_config.draft_vocab_size = verifier_config.vocab_size
-                ignore_mismatched_sizes = True
         else:
              print("INFO: Found t2d/d2t mapping in checkpoint. Using mapped vocabulary.")
             
-        draft_model = Eagle3DraftModel.from_pretrained(
-            args.pretrained_draft_model_path,
-            config=speculator_config,
-            t2d=t2d,
-            d2t=d2t,
-            ignore_mismatched_sizes=ignore_mismatched_sizes,
-        )
+        # Create model with mappings (like from scratch training)
+        draft_model = Eagle3DraftModel(config=speculator_config, t2d=t2d, d2t=d2t)
+        
+        # Load pretrained weights manually
+        if file_to_load and state_dict:
+            # Filter out keys that should not be loaded
+            keys_to_ignore = ["verifier"]
+            filtered_state_dict = {
+                k: v for k, v in state_dict.items() 
+                if not any(ignore_key in k for ignore_key in keys_to_ignore)
+            }
+            
+            # Load weights with strict=False to ignore missing keys
+            missing_keys, unexpected_keys = draft_model.load_state_dict(
+                filtered_state_dict, strict=False
+            )
+            
+            if missing_keys:
+                print(f"INFO: Missing keys when loading checkpoint (expected): {missing_keys}")
+            if unexpected_keys:
+                print(f"WARNING: Unexpected keys when loading checkpoint: {unexpected_keys}")
+                
+            print(f"INFO: Successfully loaded pretrained weights from {file_to_load}")
+        else:
+            print("WARNING: Could not find checkpoint file. Model will be initialized from scratch.")
         
         if speculator_config.eagle_aux_hidden_state_layer_ids:
              print(f"INFO: Pretrained model uses layer IDs: {speculator_config.eagle_aux_hidden_state_layer_ids}")
