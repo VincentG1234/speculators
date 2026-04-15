@@ -25,6 +25,7 @@ from datasets import load_from_disk
 from safetensors import safe_open
 from tqdm import tqdm
 
+from speculators.data_generation.disk_utils import log_disk_estimate
 from speculators.data_generation.vllm_client import generate_hidden_states_async
 from speculators.train.logger import setup_root_logger
 
@@ -270,6 +271,8 @@ async def generate_and_save_hidden_states(args, dataset):
                 "found model_id {model_id}."
                 "Please make sure --endpoint is set to the correct vllm instance."
             )
+
+        log_disk_estimate(logger.warning, args.layer_ids, model_id, dataset, len(to_process))
 
         with tqdm(total=len(to_process)) as pbar:
             workers = [

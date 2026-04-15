@@ -58,6 +58,11 @@ class PipelineLogger:
         yellow = "\033[93m"
         self.logger.warning("  %s %s", self._color("⚠", yellow), message)
 
+    def disk_estimate(self, message: str):
+        """Log a disk space estimate with a prominent visual warning prefix."""
+        red_bold = "\033[1;91m"
+        self.logger.warning("  %s %s", self._color("⚠", red_bold), message)
+
     def error(self, message: str):
         """Print error message."""
         red = "\033[91m"

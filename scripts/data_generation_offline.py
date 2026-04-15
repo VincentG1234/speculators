@@ -38,6 +38,7 @@ envs.VLLM_WORKER_MULTIPROC_METHOD = "spawn"
 from speculators.data_generation.config_generator import (  # noqa: E402
     DataGenerationConfig,
 )
+from speculators.data_generation.disk_utils import log_disk_estimate  # noqa: E402
 from speculators.data_generation.logging_utils import PipelineLogger  # noqa: E402
 from speculators.data_generation.preprocessing import (  # noqa: E402
     load_and_preprocess_dataset,
@@ -251,6 +252,15 @@ def generate_and_save_hidden_states(args, dataset):
     if start_sample_idx >= num_samples:
         log.info("All samples already processed!")
         return 0
+
+    log_disk_estimate(
+        log.disk_estimate,
+        args.layer_ids,
+        args.target_model_path,
+        dataset,
+        num_samples - start_sample_idx,
+        seed=args.seed,
+    )
 
     log.subsection("Initializing vLLM hidden states generator")
     generator = VllmHiddenStatesGenerator(
